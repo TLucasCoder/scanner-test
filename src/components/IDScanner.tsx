@@ -65,10 +65,10 @@ export default function IDScanner() {
     cv.equalizeHist(dst, equalized); 
     
     const blurred = new cv.Mat();
-    cv.bilateralFilter(equalized, blurred, 9, 25, 25);
-    //cv.GaussianBlur(equalized, blurred, new cv.Size(3, 3), 0); // blur to reduce noise
+    cv.bilateralFilter(equalized, blurred, 20, 25, 25);
+    //cv.GaussianBlur(equalized, blurred, new cv.Size(7,7), 0); // blur to reduce noise
     const edges = new cv.Mat();
-    cv.Canny(blurred, edges, 50, 150); // edge detection
+    cv.Canny(blurred, edges, 30, 80); // edge detection
 
     // 3. Adaptive Threshold
     /*
@@ -85,8 +85,11 @@ export default function IDScanner() {
 
     //const edges = thresh;
     
-    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
+    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(25, 5)); // wide horizontal
     cv.morphologyEx(edges, edges, cv.MORPH_CLOSE, kernel);
+
+    const kernel2 = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 25)); // wide vertical
+    cv.morphologyEx(edges, edges, cv.MORPH_CLOSE, kernel2);
 
     cv.imshow(testCan,edges);
     cv.imshow(testCan1,blurred);
@@ -113,12 +116,16 @@ export default function IDScanner() {
       console.log("area: ", area);
       console.log("minArea: ", minArea);
       if (area < minArea) continue; // skip small shapes
+      
 
       const peri = cv.arcLength(cnt, true);
       const approx = new cv.Mat();
-      cv.approxPolyDP(cnt, approx, 0.02 * peri, true); // approximate contour
+      const hull = new cv.Mat();
+      cv.convexHull(cnt, hull, true, true); // force closed convex shape
+      cv.approxPolyDP(hull, approx, 0.02 * peri, true); // approximate contour
+      
       console.log("approx.rows: ", approx.rows);
-      if (approx.rows >= 4 && area > maxArea) {
+      if (approx.rows === 4  && area > maxArea) {
         maxArea = area; // biggest 4-point shape so far
         bestCnt = approx; // save it
       }
