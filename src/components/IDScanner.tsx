@@ -295,17 +295,21 @@ export default function IDScanner() {
       </div>
       <div className="flex flex-col items-center max-w-5xl w-full p-3">
           {/* Hidden capture canvas */}
+          <h1>Video stream captured image</h1>
           <canvas ref={canvasRef} className=" realative w-1/2 bg-gray-900 rounded-lg" />
 
           {/* Result preview */}
+          <h1 className="mt-5">Crop result</h1>
           <canvas
             ref={outCanvasRef}
             className=" w-1/2 rounded-lg shadow-lg  bg-gray-900"
           />
+          <h1 className="mt-5">Edge detection result</h1>
           <canvas
             ref={testRef}
             className=" w-1/2 rounded-lg shadow-lg  bg-gray-900"
           />
+          <h1 className="mt-5">equalisation + filtering result</h1>
           <canvas
             ref={testRef1}
             className=" w-1/2 rounded-lg shadow-lg  bg-gray-900"
