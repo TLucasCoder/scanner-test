@@ -7,9 +7,18 @@ export default function IDScanner() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const testRef = useRef<HTMLCanvasElement | null>(null);
   const testRef1 = useRef<HTMLCanvasElement | null>(null);
+  const testRef2 = useRef<HTMLCanvasElement | null>(null);
   const outCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [cvReady, setCvReady] = useState(false);
   const [captured, setCaptured] = useState(false);
+  // @ts-ignore
+  const cv = window.cv;
+  
+  
+  interface Window {
+    cv: any;
+  }
+  
 
   // Load OpenCV.js
   useEffect(() => {
@@ -47,6 +56,17 @@ export default function IDScanner() {
     startCamera();
   }, []);
 
+  function matToPoints(mat: any): { x: number; y: number }[] {
+    const pts: { x: number; y: number }[] = [];
+    // Each row contains a Vec2 (x,y). Use intPtr/floatPtr instead of intAt.
+    for (let i = 0; i < mat.rows; i++) {
+      // prefer intPtr; if your mat is float, use floatPtr
+      const p = mat.intPtr(i, 0); // [x, y]
+      pts.push({ x: p[0], y: p[1] });
+    }
+    return pts;
+  }
+
 
   const processImage = (canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D) => {
     const testCan = testRef.current;
@@ -58,41 +78,29 @@ export default function IDScanner() {
     const src = cv.imread(canvas); // read pixels from <canvas> into cv.Mat
 
     // --- 3. Preprocess image (convert → blur → edges) ---
+    // gray scale
     const dst = new cv.Mat();
-    
     cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY, 0); // grayscale
+
+    // equalise
     const equalized = new cv.Mat();
-    cv.equalizeHist(dst, equalized); 
+    const clahe = new cv.CLAHE(2.0, new cv.Size(8,8));  
+    clahe.apply(dst, equalized);
     
+    //blurring
     const blurred = new cv.Mat();
-    cv.bilateralFilter(equalized, blurred, 20, 25, 25);
-    //cv.GaussianBlur(equalized, blurred, new cv.Size(7,7), 0); // blur to reduce noise
+    cv.bilateralFilter(equalized, blurred, 9, 30, 30);
+    //cv.GaussianBlur(equalized, blurred, new cv.Size(9,9), 0); // blur to reduce noise
+
     const edges = new cv.Mat();
     cv.Canny(blurred, edges, 30, 80); // edge detection
 
-    // 3. Adaptive Threshold
-    /*
-    const thresh1 = new cv.Mat();
-    cv.adaptiveThreshold(
-      equalized,
-      thresh1,
-      255,
-      cv.ADAPTIVE_THRESH_GAUSSIAN_C,
-      cv.THRESH_BINARY,
-      11, // block size (odd number, local window)
-      2   // constant subtracted from mean
-    );*/
-
-    //const edges = thresh;
-    
-    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(25, 5)); // wide horizontal
+    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(13, 13)); 
     cv.morphologyEx(edges, edges, cv.MORPH_CLOSE, kernel);
 
-    const kernel2 = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 25)); // wide vertical
-    cv.morphologyEx(edges, edges, cv.MORPH_CLOSE, kernel2);
 
-    cv.imshow(testCan,edges);
-    cv.imshow(testCan1,blurred);
+    cv.imshow(testRef2.current!,blurred);
+    cv.imshow(testCan1,edges);
 
     // --- 4. Find contours (shapes) ---
     const contours = new cv.MatVector();
@@ -108,38 +116,59 @@ export default function IDScanner() {
     // --- 5. Pick the largest rectangular contour (4 corners) ---
     let bestCnt = null;
     let maxArea = 0;
+    console.log("+++++++++++++++++++++++++++++++++++++++++++");
     for (let i = 0; i < contours.size(); i++) {
+
       const cnt = contours.get(i);
-      const area = cv.contourArea(cnt);
+      const rect = cv.minAreaRect(cnt);
+      const vertices = cv.RotatedRect.points(rect); // gives 4 vertices
+      const ratio = rect.size.width / rect.size.height;
+      const aspect = ratio > 1 ? ratio : 1 / ratio;
+
+      const boxArea = rect.size.width * rect.size.height;
+      const contourArea = cv.contourArea(cnt);
       //const minArea = (canvas.width * canvas.height) * 0.05; // 5% of frame
       const minArea = 15000;
-      console.log("area: ", area);
-      console.log("minArea: ", minArea);
-      if (area < minArea) continue; // skip small shapes
-      
 
+      
       const peri = cv.arcLength(cnt, true);
       const approx = new cv.Mat();
       const hull = new cv.Mat();
       cv.convexHull(cnt, hull, true, true); // force closed convex shape
       cv.approxPolyDP(hull, approx, 0.02 * peri, true); // approximate contour
+
+
+      if (contourArea < minArea) continue; // skip small shapes
       
       console.log("approx.rows: ", approx.rows);
-      if (approx.rows === 4  && area > maxArea) {
-        maxArea = area; // biggest 4-point shape so far
+      if (approx.rows === 4  && contourArea > maxArea) {
+        maxArea = contourArea; // biggest 4-point shape so far
         bestCnt = approx; // save it
       }
+
+
     }
     console.log("Contours found:", contours.size());
     console.log("Best contour:", bestCnt ? "yes" : "no"); 
+    console.log("bestCnt: ", bestCnt);
+
 
     // --- 6. If we found a rectangle, warp it into a flat crop ---
     if (bestCnt && outCanvasRef.current) {
-      // Extract the 4 corner points
-      const pts: { x: number; y: number }[] = [];
-      for (let i = 0; i < 4; i++) {
-        pts.push({ x: bestCnt.intAt(i, 0), y: bestCnt.intAt(i, 1) });
-      }
+
+      const pts = matToPoints(bestCnt); 
+      console.log("pts: ",pts);
+      console.log();
+
+
+      //const cropped = cropDocument(src, pts);
+
+      const colors = [
+        [255, 0, 0, 255],     // top-left → red
+        [0, 0, 255, 255],     // top-right → blue
+        [255, 255, 0, 255],   // bottom-right → yellow
+        [0, 255, 0, 255],     // bottom-left → green
+      ];
 
       // Sort into [top-left, top-right, bottom-right, bottom-left]
       const [tl, tr, br, bl] = orderPoints(pts);
@@ -166,6 +195,10 @@ export default function IDScanner() {
         maxWidth - 1, maxHeight - 1,
         0, maxHeight - 1,
       ]);
+      for (let i = 0; i < 4; i++) {
+        cv.circle(src, new cv.Point(pts[i].x, pts[i].y), 12, colors[i], -1);
+      }
+      cv.imshow(testRef.current!, src);
 
       // Warp (deskew) the card to a proper rectangle
       const M = cv.getPerspectiveTransform(srcTri, dstTri);
@@ -189,8 +222,8 @@ export default function IDScanner() {
     contours.delete();
     hierarchy.delete();
 
-
   }
+
   // Capture frame and process
   const handleCapture = () => {
     // ✅ Early exit if OpenCV not ready or refs missing
@@ -212,16 +245,23 @@ export default function IDScanner() {
 
   // Order corner points
   function orderPoints(pts: { x: number; y: number }[]) {
-    // Sort points by sum of coordinates
-    pts.sort((a, b) => a.x + a.y - (b.x + b.y));
-    const tl = pts[0]; // smallest sum → top-left
-    const br = pts[3]; // largest sum → bottom-right
-    const [p1, p2] = [pts[1], pts[2]];
-    // Distinguish remaining two points
-    const tr = p1.x > p2.x ? p1 : p2;
-    const bl = p1.x > p2.x ? p2 : p1;
-    return [tl, tr, br, bl];
+    // tl: min(x+y), br: max(x+y)
+    let tl = pts[0], br = pts[0], tr = pts[0], bl = pts[0];
+
+    for (const p of pts) {
+      if (p.x + p.y < tl.x + tl.y) tl = p;
+      if (p.x + p.y > br.x + br.y) br = p;
+    }
+    // tr: max(x - y), bl: min(x - y)
+    for (const p of pts) {
+      const d = p.x - p.y;
+      const dTr = tr.x - tr.y, dBl = bl.x - bl.y;
+      if (d > dTr) tr = p;
+      if (d < dBl) bl = p;
+    }
+    return [tl, tr, br, bl]; // TL, TR, BR, BL
   }
+
 
   // Upload captured image
   const handleUpload = async () => {
@@ -243,12 +283,13 @@ export default function IDScanner() {
     else alert("Upload failed");
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange =   (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    
     if (!file || !canvasRef.current) return;
 
     const img = new Image();
-    img.onload = () => {
+    img.onload =  () =>  {
       const canvas = canvasRef.current!;
       const ctx = canvas.getContext("2d")!;
       canvas.width = img.width;
@@ -256,9 +297,91 @@ export default function IDScanner() {
       ctx.drawImage(img, 0, 0);
 
       processImage(canvas,ctx);
+      /*
+      const base64 = await fileToBase64(file);
+      const vertices = await detectDocumentFromVision(base64);
+      if (vertices && outCanvasRef.current) {
+        // Use same warp logic as your processImage
+        const src = cv.imread(canvas);
+        const cropped = cropDocument(src, vertices); // you'll need to copy your warp code into a helper
+        cv.imshow(outCanvasRef.current, cropped);
+        //const outCanvas = outCanvasRef.current;
+        //outCanvas.width = maxWidth;
+        //outCanvas.height = maxHeight;
+        //cv.imshow(outCanvas, cropped);
+        setCaptured(true);
+      }
+        */
+
     };
     img.src = URL.createObjectURL(file);
   };
+
+  function fileToBase64(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve((reader.result as string).split(",")[1]);
+      reader.onerror = (err) => reject(err);
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function detectDocumentFromVision(base64Image: string) {
+      const apiKey = process.env.NEXT_PUBLIC_GOOGLE_VISION_KEY; // put your key in .env.local
+      const url = `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`;
+
+      const body = {
+        requests: [
+          {
+            image: { content: base64Image },
+            features: [{ type: "DOCUMENT_TEXT_DETECTION" }]
+          }
+        ]
+      };
+
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      const json = await res.json();
+      const vertices =
+        json.responses?.[0]?.fullTextAnnotation?.pages?.[0]?.blocks?.[0]?.boundingBox?.vertices;
+
+      return vertices || null; // [{x,y},...]
+    }
+
+  function cropDocument(src: any, vertices: {x:number,y:number}[]) {
+    const [tl, tr, br, bl] = orderPoints(vertices);
+
+    const widthA = Math.hypot(br.x - bl.x, br.y - bl.y);
+    const widthB = Math.hypot(tr.x - tl.x, tr.y - tl.y);
+    const maxWidth = Math.max(widthA, widthB);
+
+    const heightA = Math.hypot(tr.x - br.x, tr.y - br.y);
+    const heightB = Math.hypot(tl.x - bl.x, tl.y - bl.y);
+    const maxHeight = Math.max(heightA, heightB);
+
+    const srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
+      tl.x, tl.y,
+      tr.x, tr.y,
+      br.x, br.y,
+      bl.x, bl.y,
+    ]);
+    const dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
+      0, 0,
+      maxWidth - 1, 0,
+      maxWidth - 1, maxHeight - 1,
+      0, maxHeight - 1,
+    ]);
+
+    const M = cv.getPerspectiveTransform(srcTri, dstTri);
+    const dst = new cv.Mat();
+    cv.warpPerspective(src, dst, M, new cv.Size(maxWidth, maxHeight));
+    return dst;
+  }
+
 
   
 
@@ -319,6 +442,11 @@ export default function IDScanner() {
           <h1 className="mt-5">equalisation + filtering result</h1>
           <canvas
             ref={testRef1}
+            className=" w-1/2 rounded-lg shadow-lg  bg-gray-900"
+          />
+          <h1 className="mt-5">equalisation + filtering result</h1>
+          <canvas
+            ref={testRef2}
             className=" w-1/2 rounded-lg shadow-lg  bg-gray-900"
           />
           
