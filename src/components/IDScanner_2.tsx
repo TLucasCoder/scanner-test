@@ -16,6 +16,51 @@ export default function IDScanner() {
 
   const [cvReady, setCvReady] = useState(false);
 
+  function applyGrabCut(cv: any, src: any) {
+  // Ensure we have a 3-channel image
+  let colorSrc = new cv.Mat();
+  if (src.type() === cv.CV_8UC4) {
+  cv.cvtColor(src, colorSrc, cv.COLOR_RGBA2RGB);
+  } else if (src.type() === cv.CV_8UC1) {
+  cv.cvtColor(src, colorSrc, cv.COLOR_GRAY2RGB);
+  } else {
+  colorSrc = src.clone();
+  }
+  console.log("3-channel image ensured");
+  //const mask = new cv.Mat.zeros(colorSrc.rows, colorSrc.cols, cv.CV_8UC1);
+  const mask = new cv.Mat(colorSrc.rows, colorSrc.cols, cv.CV_8UC1, new cv.Scalar(cv.GC_BGD));
+  const bgdModel = new cv.Mat(1, 65, cv.CV_64FC1, new cv.Scalar(0));
+  const fgdModel = new cv.Mat(1, 65, cv.CV_64FC1, new cv.Scalar(0));
+  // Assume doc is roughly central
+  const rect = new cv.Rect(
+      50,
+      50,
+      Math.max(1, colorSrc.cols - 50),
+      Math.max(1, colorSrc.rows - 50)
+  );
+  try {
+      cv.grabCut(colorSrc, mask, rect, bgdModel, fgdModel, 5, cv.GC_INIT_WITH_RECT);
+  } 
+  catch (err) {
+      console.error("GrabCut failed:", err);
+      return src.clone(); // fallback
+  }
+  console.log("grab_cut done");
+  // Extract probable foreground
+  const resultMask = new cv.Mat();
+  cv.compare(mask, new cv.Mat(mask.rows, mask.cols, mask.type(), new cv.Scalar(cv.GC_PR_FGD)), resultMask, cv.CMP_EQ);
+  console.log("probable forground extracted");
+  const foreground = new cv.Mat();
+  colorSrc.copyTo(foreground, resultMask);
+
+  cv.imshow(stage3Ref.current!, foreground);
+
+  // cleanup
+  colorSrc.delete(); mask.delete(); bgdModel.delete(); fgdModel.delete(); resultMask.delete();
+  console.log("cleanup done");
+  return foreground;
+  }
+
   // Load OpenCV.js
   useEffect(() => {
     const script = document.createElement("script");
@@ -74,100 +119,54 @@ export default function IDScanner() {
 
     // thresholding
     const equalized = new cv.Mat();
-    const clahe = new cv.CLAHE(3.0, new cv.Size(16,16));  
+    const clahe = new cv.CLAHE(4.0, new cv.Size(25,25)); 
     clahe.apply(gray, equalized);
-    cv.imshow(stage1Ref.current!, equalized);
+    
+
+    //const th = new cv.Mat();
+    //cv.adaptiveThreshold(equalized, th, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 15, 2);
+    //cv.imshow(stage1Ref.current!, th);
+    
 
     // blurring
-    
-    cv.GaussianBlur(equalized, equalized, new cv.Size(21,21), 0);
-    cv.imshow(stage1Ref.current!, equalized);
-    //cv.imshow(stage1Ref.current!, gray);
-    return equalized;
+    const blurred = new cv.Mat();
+    //cv.GaussianBlur(equalized, blurred, new cv.Size(7,7), 0);
+    cv.bilateralFilter(equalized, blurred, 15, 50, 50);
+    cv.imshow(stage1Ref.current!, blurred);
+    return blurred;
   }
 
   function morphologicalClose(cv: any, img: any, itr: number) {
     let current = img.clone();   // make a copy so we don’t overwrite the original
 
-    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(40, 40));
+    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(9, 9));
 
     for (let i = 0; i < itr; i++) {
         const temp = new cv.Mat();
-        cv.morphologyEx(current, temp, cv.MORPH_CLOSE, kernel);
-        current.delete();   // free the old one
-        current = temp;     // use the new one as input for next iteration
+        cv.morphologyEx(current, current, cv.MORPH_CLOSE, kernel);
+        //current.delete();   // free the old one
+        //current = temp;     // use the new one as input for next iteration
     }
-
+    //cv.dilate(binary, binary, kernel);
+    // wipe out small blob
+    cv.morphologyEx(current, current, cv.MORPH_OPEN, cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(9, 9)));
     cv.imshow(stage2Ref.current!, current);
 
     return current;
   }
 
-
-  function applyGrabCut(cv: any, src: any) {
-    // Ensure we have a 3-channel image
-    let colorSrc = new cv.Mat();
-    if (src.type() === cv.CV_8UC4) {
-    cv.cvtColor(src, colorSrc, cv.COLOR_RGBA2RGB);
-    } else if (src.type() === cv.CV_8UC1) {
-    cv.cvtColor(src, colorSrc, cv.COLOR_GRAY2RGB);
-    } else {
-    colorSrc = src.clone();
-    }
-    console.log("3-channel image ensured");
-    //const mask = new cv.Mat.zeros(colorSrc.rows, colorSrc.cols, cv.CV_8UC1);
-    const mask = new cv.Mat(colorSrc.rows, colorSrc.cols, cv.CV_8UC1, new cv.Scalar(cv.GC_BGD));
-    const bgdModel = new cv.Mat(1, 65, cv.CV_64FC1, new cv.Scalar(0));
-    const fgdModel = new cv.Mat(1, 65, cv.CV_64FC1, new cv.Scalar(0));
-    // Assume doc is roughly central
-    const rect = new cv.Rect(
-        50,
-        50,
-        Math.max(1, colorSrc.cols - 50),
-        Math.max(1, colorSrc.rows - 50)
-    );
-    try {
-        cv.grabCut(colorSrc, mask, rect, bgdModel, fgdModel, 5, cv.GC_INIT_WITH_RECT);
-    } 
-    catch (err) {
-        console.error("GrabCut failed:", err);
-        return src.clone(); // fallback
-    }
-    console.log("grab_cut done");
-    // Extract probable foreground
-    const resultMask = new cv.Mat();
-    cv.compare(mask, new cv.Mat(mask.rows, mask.cols, mask.type(), new cv.Scalar(cv.GC_PR_FGD)), resultMask, cv.CMP_EQ);
-    console.log("probable forground extracted");
-    const foreground = new cv.Mat();
-    colorSrc.copyTo(foreground, resultMask);
-
-    cv.imshow(stage3Ref.current!, foreground);
-
-    // cleanup
-    colorSrc.delete(); mask.delete(); bgdModel.delete(); fgdModel.delete(); resultMask.delete();
-    console.log("cleanup done");
-    return foreground;
-    }
-
-
-  function detectEdges(cv: any, img: any) {
-    /*
-    const gray = new cv.Mat();
-    cv.cvtColor(img, gray, cv.COLOR_RGBA2GRAY, 0);
-    cv.GaussianBlur(gray, gray, new cv.Size(7,7), 0);
-    //cv.imshow(stage1Ref.current!, gray);
-    */
-   // wipe out small blob
-    cv.morphologyEx(img, img, cv.MORPH_OPEN, cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(15, 15)));
-   
+  function detectEdges(cv: any, img: any) {  
     const edges = new cv.Mat();
-    cv.Canny(img, edges, 15, 60);
+    cv.Canny(img, edges, 10, 40);
+    // for bilateral
+    //cv.Canny(img,edges, 30,80)
     const dilated = new cv.Mat();
-    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(15, 15));
-    cv.dilate(edges, dilated, kernel);
+    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(9, 9));
+    //cv.dilate(edges, dilated, kernel);
+    cv.morphologyEx(edges, dilated, cv.MORPH_CLOSE, kernel);
 
-    cv.imshow(stage4Ref.current!, edges);
-    return edges;
+    cv.imshow(stage4Ref.current!, dilated);
+    return dilated; 
   }
 
   function findAndDrawContours(cv: any, src: any, edges: any) {
@@ -175,15 +174,63 @@ export default function IDScanner() {
     const hierarchy = new cv.Mat();
     cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
-    const contourImg = cv.Mat.zeros(src.rows, src.cols, cv.CV_8UC3);
-    for (let i = 0; i < contours.size(); i++) {
-      const color = new cv.Scalar(0, 255, 0);
-      cv.drawContours(contourImg, contours, i, color, 2);
+    // 6. Find the largest rectangle-like contour with stricter checks
+    let maxRect = null;
+    let maxArea = 0;
+    for (let i = 0; i < contours.size(); ++i) {
+        const contour = contours.get(i);
+        const peri = cv.arcLength(contour, true);
+        const approx = new cv.Mat();
+        const hull = new cv.Mat();
+        cv.convexHull(contour, hull, true, true); // force closed convex shape
+        cv.approxPolyDP(hull, approx, 0.02 * peri, true);
+
+        // Rectangle: 4 points, convex, reasonable aspect ratio
+       
+        if (
+            approx.rows >= 4 
+            //&& cv.isContourConvex(approx)
+        ) {
+            
+            const area = cv.contourArea(approx);
+            console.log("hi");
+            console.log("area: ", area);
+            if (area > maxArea) {
+                // Check aspect ratio (rectangle, not line)
+                const rect = cv.boundingRect(approx);
+                const aspect = rect.width / rect.height;
+                if (area > 20000 && aspect > 0.5 && aspect < 2.5) {
+                    //console.log();
+                    maxArea = area;
+                    maxRect = rect;
+                }
+            }
+        }
+        
+        //cv.imshow(stage5Ref.current!, maxRect);
+        approx.delete();
     }
-    cv.imshow(stage5Ref.current!, contourImg);
+    console.log("maxRect: ",maxRect);
+    console.log("area" , maxArea);
+    /*
+    cv.imshow(stage5Ref.current!, contourImg);*/
 
     contours.delete(); hierarchy.delete();
-    return contourImg;
+
+    if (maxRect) {
+      const pt1 = new cv.Point(maxRect.x, maxRect.y); // top-left
+      const pt2 = new cv.Point(maxRect.x + maxRect.width, maxRect.y + maxRect.height); // bottom-right
+
+      // Draw rectangle on a copy of src (so you don’t overwrite original)
+      const drawn = src.clone();
+      cv.rectangle(drawn, pt1, pt2, new cv.Scalar(0, 0, 255, 255), 4); // red box, thickness 4px
+
+      cv.imshow(stage5Ref.current!, drawn);
+      drawn.delete();
+    }
+
+    return maxRect;
+
   }
 
   function warpDocument(cv: any, src: any) {
@@ -202,7 +249,7 @@ export default function IDScanner() {
     const gray = preprocess(cv, src);
 
     // Stage 2: Morphological ops
-    const morph = morphologicalClose(cv, gray, 5);
+    const morph = morphologicalClose(cv, gray, 3);
     console.log("morphologicalClose");
 
     // Stage 3: GrabCut
@@ -222,7 +269,7 @@ export default function IDScanner() {
 
     src.delete(); 
     gray.delete(); 
-    morph.delete(); 
+    //morph.delete(); 
     //grab.delete(); 
     edges.delete();
   };
@@ -243,7 +290,23 @@ export default function IDScanner() {
     console.log("handle capture");
   };
 
+const handleFileChange =   (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    
+    if (!file || !canvasRef.current) return;
 
+    const img = new Image();
+    img.onload =  () =>  {
+      const canvas = canvasRef.current!;
+      const ctx = canvas.getContext("2d")!;
+      canvas.width = img.width;
+      canvas.height = img.height;
+      ctx.drawImage(img, 0, 0);
+
+      processImage(canvas,ctx);
+    };
+    img.src = URL.createObjectURL(file);
+  };
 
   return (
     <div className="flex flex-col items-center space-y-4 p-4">
@@ -264,6 +327,13 @@ export default function IDScanner() {
 
       {/* Controls */}
       <div className="flex space-x-4">
+        <input
+          type="file"
+          accept="image/*"
+          onChange={handleFileChange}
+          className="mb-4 bg-gray-600"
+          
+        />
         <button
           onClick={() => { console.log("clicked"); handleCapture(); }}
           disabled={!cvReady}
@@ -275,7 +345,8 @@ export default function IDScanner() {
 
       {/* Debug Stages */}
       <div className="flex flex-col items-center max-w-5xl w-full p-3">
-        <canvas ref={canvasRef} className="hidden" />
+        <h1>Stage 0: Original</h1>
+        <canvas ref={canvasRef} className="w-1/2 bg-gray-900 rounded-lg" />
         <h1>Stage 1: Preprocess (Grayscale)</h1>
         <canvas ref={stage1Ref} className="w-1/2 bg-gray-900 rounded-lg" />
 
