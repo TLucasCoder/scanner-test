@@ -111,6 +111,28 @@ export default function IDScanner() {
 
   // ---- Pipeline functions ----
 
+  function getMedianIntensity(cv: any, img: any): number {
+    // Ensure input is grayscale
+    let gray = img;
+    if (img.channels() > 1) {
+      gray = new cv.Mat();
+      cv.cvtColor(img, gray, cv.COLOR_RGBA2GRAY);
+    }
+
+    // Copy data safely
+    const data = gray.data as Uint8Array; 
+    const arr = Array.from(data);
+
+    // Sort to get median
+    arr.sort((a, b) => a - b);
+    const mid = Math.floor(arr.length / 2);
+    const median = arr.length % 2 !== 0 ? arr[mid] : (arr[mid - 1] + arr[mid]) / 2;
+
+    if (gray !== img) gray.delete(); // cleanup
+    return median;
+  }
+
+
   function preprocess(cv: any, src: any) {
 
     // grayscale
@@ -119,50 +141,55 @@ export default function IDScanner() {
 
     // thresholding
     const equalized = new cv.Mat();
-    const clahe = new cv.CLAHE(4.0, new cv.Size(25,25)); 
+    const clahe = new cv.CLAHE(3.0, new cv.Size(64,64)); 
     clahe.apply(gray, equalized);
-    
-
-    //const th = new cv.Mat();
-    //cv.adaptiveThreshold(equalized, th, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 15, 2);
-    //cv.imshow(stage1Ref.current!, th);
-    
 
     // blurring
     const blurred = new cv.Mat();
-    //cv.GaussianBlur(equalized, blurred, new cv.Size(7,7), 0);
-    cv.bilateralFilter(equalized, blurred, 15, 50, 50);
+    cv.bilateralFilter(equalized, blurred, 9, 25, 75);
     cv.imshow(stage1Ref.current!, blurred);
     return blurred;
   }
 
   function morphologicalClose(cv: any, img: any, itr: number) {
     let current = img.clone();   // make a copy so we don’t overwrite the original
-
-    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(9, 9));
+    // for closed, clear shape
+    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(25, 25));
 
     for (let i = 0; i < itr; i++) {
         const temp = new cv.Mat();
         cv.morphologyEx(current, current, cv.MORPH_CLOSE, kernel);
-        //current.delete();   // free the old one
+        //current.delete();   // free the old one 
         //current = temp;     // use the new one as input for next iteration
     }
     //cv.dilate(binary, binary, kernel);
     // wipe out small blob
-    cv.morphologyEx(current, current, cv.MORPH_OPEN, cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(9, 9)));
+    cv.morphologyEx(current, current, cv.MORPH_OPEN, cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3)));
     cv.imshow(stage2Ref.current!, current);
 
     return current;
   }
 
   function detectEdges(cv: any, img: any) {  
+
+
     const edges = new cv.Mat();
-    cv.Canny(img, edges, 10, 40);
-    // for bilateral
-    //cv.Canny(img,edges, 30,80)
+
+    const v = getMedianIntensity(cv, img);
+    const sigma = 0.33; // tune this
+    const lower = Math.max(0, (0.4 - sigma) * v);
+    const upper = Math.min(255, (0.4 + sigma) * v);
+
+    // note: high contrast can past all the test, 
+    // all setting below are focused in messy background/ weak border
+
+    cv.Canny(img, edges, lower, upper);
+    //cv.Canny(img, edges, 30, 150);
+    console.log("Adaptive Canny: \n lower: ",lower, "\n upper: ", upper, "\n intensity median: ", v);
+
+    // close morph after canny
     const dilated = new cv.Mat();
-    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(9, 9));
-    //cv.dilate(edges, dilated, kernel);
+    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(11, 11));
     cv.morphologyEx(edges, dilated, cv.MORPH_CLOSE, kernel);
 
     cv.imshow(stage4Ref.current!, dilated);
@@ -172,16 +199,18 @@ export default function IDScanner() {
   function findAndDrawContours(cv: any, src: any, edges: any) {
     const contours = new cv.MatVector();
     const hierarchy = new cv.Mat();
-    cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+    cv.findContours(edges, contours, hierarchy, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE);
 
     // 6. Find the largest rectangle-like contour with stricter checks
     let maxRect = null;
     let maxArea = 0;
+    const area_limit = 20000;
+    let stored_rect = [];
     for (let i = 0; i < contours.size(); ++i) {
         const contour = contours.get(i);
         const peri = cv.arcLength(contour, true);
         const approx = new cv.Mat();
-        const hull = new cv.Mat();
+        const hull = new cv.Mat();  
         cv.convexHull(contour, hull, true, true); // force closed convex shape
         cv.approxPolyDP(hull, approx, 0.02 * peri, true);
 
@@ -189,17 +218,22 @@ export default function IDScanner() {
        
         if (
             approx.rows >= 4 
-            //&& cv.isContourConvex(approx)
+            && cv.isContourConvex(approx)
         ) {
             
             const area = cv.contourArea(approx);
-            console.log("hi");
-            console.log("area: ", area);
-            if (area > maxArea) {
+            if (area >area_limit) {
+                
                 // Check aspect ratio (rectangle, not line)
                 const rect = cv.boundingRect(approx);
-                const aspect = rect.width / rect.height;
-                if (area > 20000 && aspect > 0.5 && aspect < 2.5) {
+                let aspect = (rect.width / rect.height);
+                if (aspect < 1){
+                  aspect = 1/aspect;
+                }
+                console.log("area: ", area);
+                console.log("aspect: ", aspect);
+                stored_rect.push({area, rect});
+                if (area > maxArea  && aspect > 1 && aspect < 2) {
                     //console.log();
                     maxArea = area;
                     maxRect = rect;
@@ -217,6 +251,26 @@ export default function IDScanner() {
 
     contours.delete(); hierarchy.delete();
 
+
+    // testing: print out all box captured for debugging
+    if (stored_rect){
+      const drawn = src.clone();
+      for (const item of stored_rect){
+        const target = item.rect;
+
+        const pt1 = new cv.Point(target.x, target.y); // top-left
+        const pt2 = new cv.Point(target.x + target.width, target.y + target.height); // bottom-right
+
+        // Draw rectangle on a copy of src (so you don’t overwrite original)
+        
+        cv.rectangle(drawn, pt1, pt2, new cv.Scalar(0, 0, 255, 255), 4); // red box, thickness 4px
+
+      }
+      cv.imshow(stage5Ref.current!, drawn);
+      drawn.delete();
+    }
+    
+    /*
     if (maxRect) {
       const pt1 = new cv.Point(maxRect.x, maxRect.y); // top-left
       const pt2 = new cv.Point(maxRect.x + maxRect.width, maxRect.y + maxRect.height); // bottom-right
@@ -227,11 +281,12 @@ export default function IDScanner() {
 
       cv.imshow(stage5Ref.current!, drawn);
       drawn.delete();
-    }
+    }*/
 
     return maxRect;
 
   }
+
 
   function warpDocument(cv: any, src: any) {
     // Dummy warp (identity) – replace with approxPolyDP logic
@@ -240,6 +295,14 @@ export default function IDScanner() {
 
   // ---- Main processing ----
   const processImage = (canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D) => {
+    /*
+      testing targets: 
+       - dark background (success)
+       - white background (success)
+       - noisy background (pen drawn)
+       - noisy background (on hand/book)
+       - noisy background (glass table)
+     */
     // @ts-ignore
     const cv = window.cv;
     const src = cv.imread(canvas);
